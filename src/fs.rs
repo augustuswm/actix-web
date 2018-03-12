@@ -499,7 +499,6 @@ impl<S> Handler<S> for StaticFiles {
                 if let Some(ref redir_index) = self.index {
                     if redir_index == "index.html" {
                         path.push(redir_index);
-                        panic!("{:?}", path);
                         Ok(FilesystemElement::File(
                             NamedFile::open(path)?.set_cpu_pool(self.cpu_pool.clone()),
                         ))
