@@ -591,13 +591,14 @@ mod tests {
             resp.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/html; charset=utf-8"
         );
+
         assert!(resp.body().is_binary());
         assert!(format!("{:?}", resp.body()).contains("README.md"));
     }
 
     #[test]
     fn test_redirect_to_index() {
-        let mut st = StaticFiles::new(".", false).index_file("index.html");
+        let mut st = StaticFiles::new(".", false).index_file("main.html");
         let mut req = HttpRequest::default();
         req.match_info_mut().add("tail", "guide");
 
@@ -605,7 +606,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FOUND);
         assert_eq!(
             resp.headers().get(header::LOCATION).unwrap(),
-            "/guide/index.html"
+            "/guide/main.html"
         );
 
         let mut req = HttpRequest::default();
@@ -615,8 +616,34 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FOUND);
         assert_eq!(
             resp.headers().get(header::LOCATION).unwrap(),
-            "/guide/index.html"
+            "/guide/main.html"
         );
+    }
+
+    #[test]
+    fn test_autoload_of_index_html() {
+        let mut st = StaticFiles::new(".", false).index_file("index.html");
+        let mut req = HttpRequest::default();
+        req.match_info_mut().add("tail", "tests");
+
+        let resp = st.handle(req).respond_to(HttpRequest::default()).unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html"
+        );
+        assert!(resp.body().is_streaming());
+
+        let mut req = HttpRequest::default();
+        req.match_info_mut().add("tail", "tests/");
+
+        let resp = st.handle(req).respond_to(HttpRequest::default()).unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html"
+        );
+        assert!(resp.body().is_streaming());
     }
 
     #[test]
