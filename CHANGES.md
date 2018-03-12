@@ -6,7 +6,9 @@
 
 * Fix connection get closed too early
 
-* Fix steraming response handling for http/2
+* Fix streaming response handling for http/2
+
+* Better sleep on error support
 
 
 ## 0.4.6 (2018-03-10)
