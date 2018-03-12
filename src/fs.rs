@@ -1,10 +1,10 @@
 //! Static files support.
 
 // //! TODO: needs to re-implement actual files handling, current impl blocks
-use std::{io, cmp};
+use std::{cmp, io};
 use std::io::{Read, Seek};
 use std::fmt::Write;
-use std::fs::{File, DirEntry, Metadata};
+use std::fs::{DirEntry, File, Metadata};
 use std::path::{Path, PathBuf};
 use std::ops::{Deref, DerefMut};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,10 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use http::{Method, StatusCode};
-use futures::{Async, Poll, Future, Stream};
-use futures_cpupool::{CpuPool, CpuFuture};
+use futures::{Async, Future, Poll, Stream};
+use futures_cpupool::{CpuFuture, CpuPool};
 use mime_guess::get_mime_type;
 
 use header;
@@ -25,7 +25,7 @@ use handler::{Handler, Responder};
 use httpmessage::HttpMessage;
 use httprequest::HttpRequest;
 use httpresponse::HttpResponse;
-use httpcodes::{HttpOk, HttpFound, HttpMethodNotAllowed};
+use httpcodes::{HttpFound, HttpMethodNotAllowed, HttpOk};
 
 /// A file with an associated name; responds with the Content-Type based on the
 /// file extension.
@@ -54,7 +54,13 @@ impl NamedFile {
         let path = path.as_ref().to_path_buf();
         let modified = md.modified().ok();
         let cpu_pool = None;
-        Ok(NamedFile{path, file, md, modified, cpu_pool})
+        Ok(NamedFile {
+            path,
+            file,
+            md,
+            modified,
+            cpu_pool,
+        })
     }
 
     /// Returns reference to the underlying `File` object.
@@ -94,17 +100,25 @@ impl NamedFile {
         self.modified.as_ref().map(|mtime| {
             let ino = {
                 #[cfg(unix)]
-                { self.md.ino() }
+                {
+                    self.md.ino()
+                }
                 #[cfg(not(unix))]
-                { 0 }
+                {
+                    0
+                }
             };
 
-            let dur = mtime.duration_since(UNIX_EPOCH)
+            let dur = mtime
+                .duration_since(UNIX_EPOCH)
                 .expect("modification time must be after epoch");
-            header::EntityTag::strong(
-                format!("{:x}:{:x}:{:x}:{:x}",
-                        ino, self.md.len(), dur.as_secs(),
-                        dur.subsec_nanos()))
+            header::EntityTag::strong(format!(
+                "{:x}:{:x}:{:x}:{:x}",
+                ino,
+                self.md.len(),
+                dur.as_secs(),
+                dur.subsec_nanos()
+            ))
         })
     }
 
@@ -162,17 +176,18 @@ fn none_match(etag: Option<&header::EntityTag>, req: &HttpRequest) -> bool {
     }
 }
 
-
 impl Responder for NamedFile {
     type Item = HttpResponse;
     type Error = io::Error;
 
     fn respond_to(self, req: HttpRequest) -> Result<HttpResponse, io::Error> {
         if *req.method() != Method::GET && *req.method() != Method::HEAD {
-            return Ok(HttpMethodNotAllowed.build()
-                      .header(header::http::CONTENT_TYPE, "text/plain")
-                      .header(header::http::ALLOW, "GET, HEAD")
-                      .body("This resource only supports GET and HEAD.").unwrap())
+            return Ok(HttpMethodNotAllowed
+                .build()
+                .header(header::http::CONTENT_TYPE, "text/plain")
+                .header(header::http::ALLOW, "GET, HEAD")
+                .body("This resource only supports GET and HEAD.")
+                .unwrap());
         }
 
         let etag = self.etag();
@@ -202,17 +217,21 @@ impl Responder for NamedFile {
 
         let mut resp = HttpOk.build();
 
-        resp
-            .if_some(self.path().extension(), |ext, resp| {
-                resp.set(header::ContentType(get_mime_type(&ext.to_string_lossy())));
+        resp.if_some(self.path().extension(), |ext, resp| {
+            resp.set(header::ContentType(get_mime_type(&ext.to_string_lossy())));
+        }).if_some(last_modified, |lm, resp| {
+                resp.set(header::LastModified(lm));
             })
-            .if_some(last_modified, |lm, resp| {resp.set(header::LastModified(lm));})
-            .if_some(etag, |etag, resp| {resp.set(header::ETag(etag));});
+            .if_some(etag, |etag, resp| {
+                resp.set(header::ETag(etag));
+            });
 
         if precondition_failed {
-            return Ok(resp.status(StatusCode::PRECONDITION_FAILED).finish().unwrap())
+            return Ok(resp.status(StatusCode::PRECONDITION_FAILED)
+                .finish()
+                .unwrap());
         } else if not_modified {
-            return Ok(resp.status(StatusCode::NOT_MODIFIED).finish().unwrap())
+            return Ok(resp.status(StatusCode::NOT_MODIFIED).finish().unwrap());
         }
 
         if *req.method() == Method::GET {
@@ -242,7 +261,7 @@ pub struct ChunkedReadFile {
 
 impl Stream for ChunkedReadFile {
     type Item = Bytes;
-    type Error= Error;
+    type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Bytes>, Error> {
         if self.fut.is_some() {
@@ -252,7 +271,7 @@ impl Stream for ChunkedReadFile {
                     self.file = Some(file);
                     self.offset += bytes.len() as u64;
                     Ok(Async::Ready(Some(bytes)))
-                },
+                }
                 Async::NotReady => Ok(Async::NotReady),
             };
         }
@@ -268,11 +287,11 @@ impl Stream for ChunkedReadFile {
                 let max_bytes = cmp::min(size.saturating_sub(offset), 65_536) as usize;
                 let mut buf = BytesMut::with_capacity(max_bytes);
                 file.seek(io::SeekFrom::Start(offset))?;
-                let nbytes = file.read(unsafe{buf.bytes_mut()})?;
+                let nbytes = file.read(unsafe { buf.bytes_mut() })?;
                 if nbytes == 0 {
-                    return Err(io::ErrorKind::UnexpectedEof.into())
+                    return Err(io::ErrorKind::UnexpectedEof.into());
                 }
-                unsafe{buf.advance_mut(nbytes)};
+                unsafe { buf.advance_mut(nbytes) };
                 Ok((file, buf.freeze()))
             }));
             self.poll()
@@ -282,9 +301,9 @@ impl Stream for ChunkedReadFile {
 
 /// A directory; responds with the generated directory listing.
 #[derive(Debug)]
-pub struct Directory{
+pub struct Directory {
     base: PathBuf,
-    path: PathBuf
+    path: PathBuf,
 }
 
 impl Directory {
@@ -296,12 +315,12 @@ impl Directory {
         if let Ok(ref entry) = *entry {
             if let Some(name) = entry.file_name().to_str() {
                 if name.starts_with('.') {
-                    return false
+                    return false;
                 }
             }
             if let Ok(ref md) = entry.metadata() {
                 let ft = md.file_type();
-                return ft.is_dir() || ft.is_file() || ft.is_symlink()
+                return ft.is_dir() || ft.is_file() || ft.is_symlink();
             }
         }
         false
@@ -322,7 +341,7 @@ impl Responder for Directory {
                 let entry = entry.unwrap();
                 let p = match entry.path().strip_prefix(&self.path) {
                     Ok(p) => base.join(p),
-                    Err(_) => continue
+                    Err(_) => continue,
                 };
                 // show file url as relative to static path
                 let file_url = format!("{}", p.to_string_lossy());
@@ -330,27 +349,40 @@ impl Responder for Directory {
                 // if file is a directory, add '/' to the end of the name
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.is_dir() {
-                        let _ = write!(body, "<li><a href=\"{}\">{}/</a></li>",
-                                       file_url, entry.file_name().to_string_lossy());
+                        let _ = write!(
+                            body,
+                            "<li><a href=\"{}\">{}/</a></li>",
+                            file_url,
+                            entry.file_name().to_string_lossy()
+                        );
                     } else {
-                        let _ = write!(body, "<li><a href=\"{}\">{}</a></li>",
-                                       file_url, entry.file_name().to_string_lossy());
+                        let _ = write!(
+                            body,
+                            "<li><a href=\"{}\">{}</a></li>",
+                            file_url,
+                            entry.file_name().to_string_lossy()
+                        );
                     }
                 } else {
-                    continue
+                    continue;
                 }
             }
         }
 
-        let html = format!("<html>\
-                            <head><title>{}</title></head>\
-                            <body><h1>{}</h1>\
-                            <ul>\
-                            {}\
-                            </ul></body>\n</html>", index_of, index_of, body);
-        Ok(HttpOk.build()
-           .content_type("text/html; charset=utf-8")
-           .body(html).unwrap())
+        let html = format!(
+            "<html>\
+             <head><title>{}</title></head>\
+             <body><h1>{}</h1>\
+             <ul>\
+             {}\
+             </ul></body>\n</html>",
+            index_of, index_of, body
+        );
+        Ok(HttpOk
+            .build()
+            .content_type("text/html; charset=utf-8")
+            .body(html)
+            .unwrap())
     }
 }
 
@@ -373,7 +405,6 @@ impl Responder for FilesystemElement {
         }
     }
 }
-
 
 /// Static files handling
 ///
@@ -417,7 +448,7 @@ impl StaticFiles {
                     warn!("Is not directory `{:?}`", dir);
                     (dir, false)
                 }
-            },
+            }
             Err(err) => {
                 warn!("Static files directory `{:?}` error: {}", dir, err);
                 (dir, false)
@@ -455,39 +486,52 @@ impl<S> Handler<S> for StaticFiles {
             let path = if let Some(path) = req.match_info().get("tail") {
                 path
             } else {
-                return Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
+                return Err(io::Error::new(io::ErrorKind::NotFound, "not found"));
             };
 
             let relpath = PathBuf::from_param(path)
                 .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "not found"))?;
 
             // full filepath
-            let path = self.directory.join(&relpath).canonicalize()?;
+            let mut path = self.directory.join(&relpath).canonicalize()?;
 
             if path.is_dir() {
                 if let Some(ref redir_index) = self.index {
-                    // TODO: Don't redirect, just return the index content.
-                    // TODO: It'd be nice if there were a good usable URL manipulation library
-                    let mut new_path: String = req.path().to_owned();
-                    for el in relpath.iter() {
-                        new_path.push_str(&el.to_string_lossy());
-                        new_path.push('/');
+                    if redir_index == "index.html" {
+                        path.push(redir_index);
+                        panic!("{:?}", path);
+                        Ok(FilesystemElement::File(
+                            NamedFile::open(path)?.set_cpu_pool(self.cpu_pool.clone()),
+                        ))
+                    } else {
+                        // TODO: Don't redirect, just return the index content.
+                        // TODO: It'd be nice if there were a good usable URL manipulation library
+                        let mut new_path: String = req.path().to_owned();
+                        for el in relpath.iter() {
+                            new_path.push_str(&el.to_string_lossy());
+                            new_path.push('/');
+                        }
+                        new_path.push_str(redir_index);
+                        Ok(FilesystemElement::Redirect(
+                            HttpFound
+                                .build()
+                                .header(header::http::LOCATION, new_path.as_str())
+                                .finish()
+                                .unwrap(),
+                        ))
                     }
-                    new_path.push_str(redir_index);
-                    Ok(FilesystemElement::Redirect(
-                        HttpFound
-                            .build()
-                            .header(header::http::LOCATION, new_path.as_str())
-                            .finish().unwrap()))
                 } else if self.show_index {
-                    Ok(FilesystemElement::Directory(
-                        Directory::new(self.directory.clone(), path)))
+                    Ok(FilesystemElement::Directory(Directory::new(
+                        self.directory.clone(),
+                        path,
+                    )))
                 } else {
                     Err(io::Error::new(io::ErrorKind::NotFound, "not found"))
                 }
             } else {
                 Ok(FilesystemElement::File(
-                    NamedFile::open(path)?.set_cpu_pool(self.cpu_pool.clone())))
+                    NamedFile::open(path)?.set_cpu_pool(self.cpu_pool.clone()),
+                ))
             }
         }
     }
@@ -502,14 +546,22 @@ mod tests {
     #[test]
     fn test_named_file() {
         assert!(NamedFile::open("test--").is_err());
-        let mut file = NamedFile::open("Cargo.toml").unwrap()
+        let mut file = NamedFile::open("Cargo.toml")
+            .unwrap()
             .set_cpu_pool(CpuPool::new(1));
-        { file.file();
-          let _f: &File = &file; }
-        { let _f: &mut File = &mut file; }
+        {
+            file.file();
+            let _f: &File = &file;
+        }
+        {
+            let _f: &mut File = &mut file;
+        }
 
         let resp = file.respond_to(HttpRequest::default()).unwrap();
-        assert_eq!(resp.headers().get(header::CONTENT_TYPE).unwrap(), "text/x-toml")
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/x-toml"
+        )
     }
 
     #[test]
@@ -536,7 +588,10 @@ mod tests {
 
         st.show_index = true;
         let resp = st.handle(req).respond_to(HttpRequest::default()).unwrap();
-        assert_eq!(resp.headers().get(header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
         assert!(resp.body().is_binary());
         assert!(format!("{:?}", resp.body()).contains("README.md"));
     }
@@ -549,14 +604,20 @@ mod tests {
 
         let resp = st.handle(req).respond_to(HttpRequest::default()).unwrap();
         assert_eq!(resp.status(), StatusCode::FOUND);
-        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/guide/index.html");
+        assert_eq!(
+            resp.headers().get(header::LOCATION).unwrap(),
+            "/guide/index.html"
+        );
 
         let mut req = HttpRequest::default();
         req.match_info_mut().add("tail", "guide/");
 
         let resp = st.handle(req).respond_to(HttpRequest::default()).unwrap();
         assert_eq!(resp.status(), StatusCode::FOUND);
-        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/guide/index.html");
+        assert_eq!(
+            resp.headers().get(header::LOCATION).unwrap(),
+            "/guide/index.html"
+        );
     }
 
     #[test]
@@ -567,6 +628,9 @@ mod tests {
 
         let resp = st.handle(req).respond_to(HttpRequest::default()).unwrap();
         assert_eq!(resp.status(), StatusCode::FOUND);
-        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/examples/basics/Cargo.toml");
+        assert_eq!(
+            resp.headers().get(header::LOCATION).unwrap(),
+            "/examples/basics/Cargo.toml"
+        );
     }
 }
